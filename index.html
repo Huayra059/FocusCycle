@@ -79,6 +79,9 @@ input[type=number]{width:88px;font:inherit;font-size:20px;padding:10px 12px;bord
 .chk{display:flex;gap:12px;align-items:flex-start;font-size:16px;line-height:1.4;background:var(--fill);border-radius:22px;padding:12px 16px}
 .chk input{width:24px;height:24px;margin-top:1px;accent-color:var(--a);flex:none}
 .chk small{display:block;color:var(--mute);font-size:12.5px;margin-top:2px}
+select{width:100%;font:inherit;font-size:16px;padding:12px 14px;border-radius:14px;border:0;background:rgba(120,120,128,.16);color:var(--ink)}
+.tonebox{display:flex;flex-direction:column;gap:10px}
+.btn.sm{min-height:42px;font-size:15px}
 .err{color:var(--bad);font-size:13px;min-height:18px;margin:0}
 .foot{font-size:12.5px;color:var(--mute);margin:0;line-height:1.5}
 @media (prefers-reduced-transparency:reduce){.card,.icon-btn,.ring,.confirm,.btn.ghost,.btn.stop,.snzbar,.banner,dialog{-webkit-backdrop-filter:none;backdrop-filter:none;background:var(--sheet)}}
@@ -119,7 +122,14 @@ input[type=number]{width:88px;font:inherit;font-size:20px;padding:10px 12px;bord
     <fieldset><legend>B · 休息时长</legend><div class="dur">
       <label><input type="number" id="bm" min="0" max="180" inputmode="numeric">分</label>
       <label><input type="number" id="bs" min="0" max="59" inputmode="numeric">秒</label></div></fieldset>
-    <label class="chk"><input type="checkbox" id="snd"><span>应用内提示音<small>阶段结束时在页面内循环播放，直到你确认。</small></span></label>
+    <fieldset><legend>提示音</legend><div class="tonebox">
+      <select id="tone" aria-label="提示音"><option value="chime">三音提示（默认）</option><option value="bell">钟声</option><option value="beep">电子闹钟</option><option value="custom">自选音频文件</option></select>
+      <div class="row"><button type="button" class="btn ghost sm" id="pick">选择音频文件…</button><button type="button" class="btn ghost sm" id="prev">试听</button></div>
+      <p class="foot" id="tname"></p>
+      <input type="file" id="file" accept="audio/*,.m4r,.m4a,.mp3,.wav,.aac,.caf" hidden>
+      <p class="foot">网页读取不到 iOS 的系统铃声库和“音乐”App 资料库，只能从“文件”App 里选择音频（mp3、m4a、wav 等）。受版权保护的 Apple Music 歌曲无法使用。所选文件只保存在本机。</p>
+    </div></fieldset>
+    <label class="chk"><input type="checkbox" id="snd"><span>应用内提示音<small>阶段结束时持续播放，直到你确认，最长 2 分钟。</small></span></label>
     <label class="chk"><input type="checkbox" id="wake"><span>计时时保持屏幕常亮<small>网页在后台会被 iPadOS 暂停，常亮能让提醒准时。</small></span></label>
     <label class="chk"><input type="checkbox" id="bg"><span>后台保活（实验）<small>计时期间循环播放无声音频，让页面在锁屏后尽量继续运行并准时响铃。锁屏界面会显示“正在播放”，耗电略增。</small></span></label>
     <p class="err" id="err"></p>
@@ -136,7 +146,7 @@ input[type=number]{width:88px;font:inherit;font-size:20px;padding:10px 12px;bord
 (function(){
 'use strict';
 var SK='fc.state.v1',CK='fc.cfg.v1',MIN=10,MAX=10800;
-var DEF={a:1500,b:300,sound:true,wake:true,bg:true};
+var DEF={a:1500,b:300,sound:true,wake:true,bg:true,tone:'chime',toneName:''};
 var $=function(i){return document.getElementById(i)};
 function load(k,d){try{var v=JSON.parse(localStorage.getItem(k));return v&&typeof v==='object'?Object.assign({},d,v):d}catch(e){return d}}
 function store(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
@@ -146,7 +156,7 @@ var FRESH={phase:'idle',id:'',deadline:0,remaining:0,dur:0,cycles:0,snooze:0};
 var st=load(SK,FRESH);
 if(/^run/.test(st.phase)&&!st.deadline)st=Object.assign({},FRESH);
 if(/^pause/.test(st.phase)&&!(st.remaining>0))st=Object.assign({},FRESH);
-var stopArm=0,timer=null,wakeLock=null,aud=null,urls={},alertTimer=null,alertOn=false;
+var stopArm=0,timer=null,wakeLock=null,aud=null,urls={},pv=null,pend=null,alertTimer=null,alertOn=false;
 
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,8)}
 function running(){return st.phase==='runA'||st.phase==='runB'}
@@ -220,10 +230,18 @@ function chimeFn(t){
     var u=t-k[1];if(u>=0&&u<k[2])y+=Math.sin(6.2832*k[0]*u)*Math.exp(-4*u/k[2])*Math.min(1,u/.01)*.6});
   return y;
 }
+function bellFn(t){var u=t%1.5,y=0;[1,2.76,5.4].forEach(function(r,i){y+=Math.sin(6.2832*523*r*u)*Math.exp(-(2.2+i)*u)*[.5,.25,.12][i]});return y*Math.min(1,u/.005)}
+function beepFn(t){var u=t%1,y=0;[0,.2,.4].forEach(function(o){var v=u-o;if(v>=0&&v<.12)y=Math.sin(6.2832*1400*t)*.45*Math.min(1,v/.01,(.12-v)/.01)});return y}
+function toneURL(){return cfg.tone==='custom'?(urls.custom||urls.chime):(urls[cfg.tone]||urls.chime)}
+function idb(mode,fn){return new Promise(function(res,rej){try{var r=indexedDB.open('fc',1);
+  r.onupgradeneeded=function(){r.result.createObjectStore('kv')};r.onerror=function(){rej(r.error)};
+  r.onsuccess=function(){var tx=r.result.transaction('kv',mode),q=fn(tx.objectStore('kv'));tx.oncomplete=function(){res(q&&q.result)};tx.onerror=function(){rej(tx.error)}}}catch(e){rej(e)}})}
+function loadCustom(){idb('readonly',function(o){return o.get('tone')}).then(function(v){if(v&&v.blob)urls.custom=URL.createObjectURL(v.blob)}).catch(function(){})}
 function unlock(){
   if(aud)return;
   aud=new Audio();aud.setAttribute('playsinline','');
-  urls.sil=wavURL(8000,2,function(){return 0});urls.chime=wavURL(44100,3,chimeFn);
+  urls.sil=wavURL(8000,2,function(){return 0});urls.chime=wavURL(44100,3,chimeFn);urls.bell=wavURL(44100,3,bellFn);urls.beep=wavURL(44100,3,beepFn);
+  aud.addEventListener('error',function(){if(alertOn&&aud.src!==urls.chime)play(urls.chime,true)});
 }
 function play(src,loop){
   unlock();aud.loop=loop;if(aud.src!==src)aud.src=src;
@@ -241,7 +259,7 @@ function stopKeep(){
   if(aud&&!alertOn)aud.pause();
   if('mediaSession' in navigator){try{navigator.mediaSession.metadata=null}catch(e){}}
 }
-function alertStart(){silence();unlock();alertOn=true;play(urls.chime,true);alertTimer=setTimeout(silence,60000);render()}
+function alertStart(){silence();unlock();alertOn=true;play(toneURL(),true);alertTimer=setTimeout(silence,120000);render()}
 function silence(){
   if(alertTimer){clearTimeout(alertTimer);alertTimer=null}
   if(alertOn){alertOn=false;if(running()&&cfg.bg)keepAlive();else if(aud)aud.pause()}
@@ -304,21 +322,51 @@ var dlg=$('dlg');
 function openSet(){
   $('am').value=Math.floor(cfg.a/60);$('as').value=cfg.a%60;
   $('bm').value=Math.floor(cfg.b/60);$('bs').value=cfg.b%60;
-  $('snd').checked=cfg.sound;$('wake').checked=cfg.wake;$('bg').checked=cfg.bg;$('err').textContent='';
+  $('snd').checked=cfg.sound;$('wake').checked=cfg.wake;$('bg').checked=cfg.bg;$('tone').value=cfg.tone;pend=null;$('tname').textContent=tnameText();$('err').textContent='';
   dlg.showModal();
 }
 function readSet(){
   var n=function(i){var v=$(i).value.trim();return /^\d+$/.test(v)?parseInt(v,10):NaN};
-  return {a:n('am')*60+n('as'),b:n('bm')*60+n('bs'),sound:$('snd').checked,wake:$('wake').checked,bg:$('bg').checked};
+  return {a:n('am')*60+n('as'),b:n('bm')*60+n('bs'),sound:$('snd').checked,wake:$('wake').checked,bg:$('bg').checked,tone:$('tone').value,toneName:cfg.toneName};
 }
+function tnameText(){
+  if(pend)return '已选：'+pend.name+'（保存后生效）';
+  if($('tone').value==='custom')return urls.custom?'当前文件：'+(cfg.toneName||'自选音频'):'尚未选择音频文件';
+  return '';
+}
+function stopPv(){if(pv){pv.pause();pv=null}$('prev').textContent='试听'}
+$('pick').onclick=function(){$('file').click()};
+$('tone').onchange=function(){stopPv();if(this.value==='custom'&&!pend&&!urls.custom)$('file').click();$('tname').textContent=tnameText()};
+$('file').onchange=function(){
+  var f=this.files&&this.files[0];this.value='';if(!f)return;
+  if(f.size>25*1024*1024){$('err').textContent='文件超过 25 MB，请选择更小的音频。';return}
+  var u=URL.createObjectURL(f),t=new Audio();
+  t.onerror=function(){URL.revokeObjectURL(u);$('err').textContent='该文件无法播放，请选择 mp3、m4a、wav 等常见音频。'};
+  t.onloadedmetadata=function(){if(pend)URL.revokeObjectURL(pend.url);pend={file:f,url:u,name:f.name};$('tone').value='custom';$('err').textContent='';$('tname').textContent=tnameText()};
+  t.src=u;
+};
+$('prev').onclick=function(){
+  if(pv){stopPv();return}
+  unlock();var k=$('tone').value,u=k==='custom'?(pend?pend.url:urls.custom):urls[k];
+  if(!u){$('err').textContent='请先选择音频文件。';return}
+  $('err').textContent='';pv=new Audio(u);pv.onended=stopPv;var pp=pv.play();if(pp&&pp.catch)pp.catch(stopPv);
+  $('prev').textContent='停止试听';setTimeout(function(){if(pv&&!pv.paused&&pv.currentTime>=15)stopPv()},15500);
+};
+dlg.addEventListener('close',function(){stopPv();if(pend){URL.revokeObjectURL(pend.url);pend=null}});
 $('openSet').onclick=openSet;$('cardA').onclick=openSet;$('cardB').onclick=openSet;
 $('cancel').onclick=function(){dlg.close()};
-$('reset').onclick=function(){$('am').value=25;$('as').value=0;$('bm').value=5;$('bs').value=0;$('snd').checked=true;$('wake').checked=true;$('bg').checked=true;$('err').textContent=''};
+$('reset').onclick=function(){$('am').value=25;$('as').value=0;$('bm').value=5;$('bs').value=0;$('snd').checked=true;$('wake').checked=true;$('bg').checked=true;$('tone').value='chime';$('err').textContent=''};
 $('save').onclick=function(){
   var v=readSet();
   if(isNaN(v.a)||isNaN(v.b)){$('err').textContent='请输入有效的数字。';return}
   if(v.a<MIN||v.b<MIN){$('err').textContent='时长不能少于 10 秒。';return}
   if(v.a>MAX||v.b>MAX){$('err').textContent='时长不能超过 180 分钟。';return}
+  if(v.tone==='custom'&&!pend&&!urls.custom){$('err').textContent='请先选择音频文件。';return}
+  if(pend){
+    idb('readwrite',function(o){return o.put({name:pend.name,blob:pend.file},'tone')}).catch(function(){});
+    if(urls.custom)URL.revokeObjectURL(urls.custom);
+    urls.custom=pend.url;v.toneName=pend.name;pend=null;
+  }
   cfg=v;store(CK,cfg);dlg.close();if(!cfg.wake)dropWake();else grabWake();if(!cfg.bg)stopKeep();else if(running())keepAlive();render();
 };
 
@@ -335,7 +383,7 @@ var seen=false;try{seen=localStorage.getItem('fc.hint')==='1'}catch(e){}
 if(!standalone&&!seen&&/iPad|iPhone|Macintosh/.test(navigator.userAgent)&&'ontouchend' in document)$('hint').hidden=false;
 $('hintClose').onclick=function(){$('hint').hidden=true;try{localStorage.setItem('fc.hint','1')}catch(e){}};
 
-refresh();if(running()||(waiting()&&st.snooze))arm();if(running())grabWake();
+loadCustom();refresh();if(running()||(waiting()&&st.snooze))arm();if(running())grabWake();
 if('serviceWorker' in navigator&&/^https?:$/.test(location.protocol)){navigator.serviceWorker.register('sw.js').catch(function(){})}
 })();
 </script>
